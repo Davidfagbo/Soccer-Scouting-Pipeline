@@ -1,0 +1,85 @@
+# Soccer Scouting Pipeline configuration.
+# Change competition, thresholds, or profile weights here without touching code.
+
+competition:
+  competition_id: 11
+  season_id: 27
+  name: "La Liga 2015/2016"
+  # Reference date for age-at-season-start calculations.
+  season_start_date: "2015-08-01"
+
+age:
+  min_age: 18
+  max_age: 23
+
+playing_time:
+  # Deliberately conservative floor: young forwards in a single season often have
+  # thin minutes. 600 minutes (~6.7 full matches) keeps per-90 rates from being
+  # dominated by small-sample noise while not excluding breakout squad players.
+  min_minutes: 600
+
+forward_classification:
+  # StatsBomb position names treated as "forward" appearances.
+  positions:
+    - "Center Forward"
+    - "Left Center Forward"
+    - "Right Center Forward"
+    - "Secondary Striker"
+    - "Striker"
+    - "Left Wing"
+    - "Right Wing"
+  # A player must have STARTED (i.e. entered the pitch in, whether from kickoff
+  # or as a substitute) a forward position in at least this share of their own
+  # appearances to be classified as a forward. Appearances, not a single lineup
+  # tag, because players shift position across a season.
+  min_forward_appearance_share: 0.5
+
+metrics:
+  # Carry is "progressive" if it cuts this many StatsBomb pitch units (pitch is
+  # 120x80, roughly yards) off the distance to the center of the opponent goal.
+  progressive_carry_min_distance: 5.0
+  # Opponent penalty box in StatsBomb pitch coordinates (attacking direction: x increases).
+  penalty_box:
+    x_min: 102.0
+    x_max: 120.0
+    y_min: 18.0
+    y_max: 62.0
+  # Shot outcomes counted as "on target".
+  on_target_outcomes:
+    - "Goal"
+    - "Saved"
+    - "Saved to Post"
+
+# Named weight sets. Each profile reweights the same metric table computed once
+# in metrics.py; weights should sum to ~1.0 for an interpretable composite score.
+profiles:
+  goalscorer:
+    xg_per90: 0.30
+    shots_on_target_per90: 0.20
+    conversion_rate: 0.20
+    box_touches_per90: 0.30
+
+  creative_wide:
+    xg_assisted_per90: 0.30
+    key_passes_per90: 0.30
+    progressive_carries_per90: 0.20
+    dribbles_completed_per90: 0.20
+
+  complete_pressing:
+    xg_per90: 0.15
+    xg_assisted_per90: 0.15
+    key_passes_per90: 0.10
+    progressive_carries_per90: 0.10
+    pressures_per90: 0.20
+    defensive_actions_per90: 0.15
+    pass_completion_pct: 0.15
+
+shortlist:
+  min_size: 3
+  max_size: 5
+
+paths:
+  cache_dir: "data/raw"
+  age_lookup_cache: "data/age_lookup.csv"
+  unmatched_players_log: "data/unmatched_players.csv"
+  output_dir: "output"

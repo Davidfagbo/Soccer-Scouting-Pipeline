@@ -1,0 +1,5 @@
+statsbombpy>=1.13
+pandas>=2.2
+mplsoccer>=1.4
+PyYAML>=6.0
+reportlab>=4.2
