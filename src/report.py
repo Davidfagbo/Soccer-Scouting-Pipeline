@@ -1,5 +1,5 @@
-# Renders the multi-page PDF scouting report: a title/method/legend page, followed by
-# one page per profile's top-10 shortlist. Budgeted at 4 pages total.
+# Renders the scouting report PDF: a short intro (brief, method, one limitations
+# section) followed by each profile's top-10 shortlist, flowing across 3 pages.
 #
 # Ranking is against the consistency-filtered pool from main.py (players who qualified
 # as an 18-23 forward with enough minutes in at least `consistency.min_seasons_qualified`
@@ -23,7 +23,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Table, TableStyle
+from reportlab.platypus import Image, KeepTogether, Paragraph, SimpleDocTemplate, Table, TableStyle
 
 METRIC_LABELS = {
     "xg_per90": "xG/90",
@@ -39,18 +39,14 @@ METRIC_LABELS = {
     "pass_completion_pct": "Pass completion %",
 }
 
-METRIC_DEFINITIONS = [
-    ("xG/90", "Expected goals per 90 minutes: StatsBomb's own shot_statsbomb_xg, summed and prorated. No in-house xG model is used."),
-    ("xG assisted/90", "Expected goals from shots that immediately followed this player's pass, where StatsBomb tags that pass as the shot assist."),
-    ("Key passes/90", "Passes that led directly to a shot attempt, per 90 minutes."),
-    ("Prog. carries/90", "Carries that cut a meaningful distance off the distance to the opponent goal, per 90 minutes (threshold set in config.yaml)."),
-    ("Box touches/90", "Passes, carries, dribbles, or shots that occur inside the opponent penalty box, per 90 minutes."),
-    ("Pressures/90", "Defensive pressure events applied to an opponent on the ball, per 90 minutes."),
-    ("Def. actions/90", "Interceptions, blocks, clearances, and tackles combined, per 90 minutes."),
-    ("Pass completion %", "Completed passes as a share of passes attempted."),
-    ("Conv. rate", "Goals scored per shot taken."),
-    ("Percentile (Pxx)", "Where a player's raw number ranks within the qualifying pool, 0-100. Used instead of a raw z-score because shot- and pass-volume metrics are heavily right-skewed."),
-]
+METRIC_GLOSSARY = (
+    "<b>Glossary:</b> xG/90 is StatsBomb's own expected-goals model, not one built for this project. "
+    "xG assisted/90 credits the passer when their pass is tagged as a shot assist. Key passes/90 counts "
+    "passes leading to a shot; prog. carries/90 counts carries that meaningfully close the distance to "
+    "goal; box touches/90 counts any touch inside the penalty box; pressures/90 and def. actions/90 cover "
+    "pressing and defensive work. Pxx is a player's percentile within the qualifying pool (0 to 100), used "
+    "instead of a raw z-score since shot and pass volume is skewed by a handful of heavy-usage players."
+)
 
 PROFILE_TITLES = {
     "goalscorer": "Goalscorer",
@@ -70,20 +66,15 @@ _PAGE_SIZE = letter
 # Builds the named paragraph styles used throughout the report.
 def _build_styles() -> dict[str, ParagraphStyle]:
     return {
-        "title": ParagraphStyle("title", fontSize=17, leading=20, fontName="Helvetica-Bold", spaceAfter=6),
-        "h2": ParagraphStyle("h2", fontSize=12, leading=14, fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=4),
-        "body": ParagraphStyle("body", fontSize=9, leading=12, spaceAfter=6),
+        "title": ParagraphStyle("title", fontSize=15, leading=18, fontName="Helvetica-Bold", spaceAfter=5),
+        "body": ParagraphStyle("body", fontSize=7.8, leading=9.6, spaceAfter=5),
         "profile_header": ParagraphStyle("profile_header", fontSize=13, leading=15, fontName="Helvetica-Bold"),
         "profile_blurb": ParagraphStyle("profile_blurb", fontSize=8, leading=10, textColor=colors.HexColor("#444444"), spaceAfter=3),
         "rank": ParagraphStyle("rank", fontSize=10, leading=11, fontName="Helvetica-Bold"),
-        "player_name": ParagraphStyle("player_name", fontSize=7.6, leading=9, fontName="Helvetica-Bold"),
         "player_meta": ParagraphStyle("player_meta", fontSize=5.9, leading=7.2, textColor=colors.HexColor("#444444")),
         "stat": ParagraphStyle("stat", fontSize=5.6, leading=6.7),
         "rationale": ParagraphStyle("rationale", fontSize=5.6, leading=6.7, textColor=colors.HexColor("#333333")),
-        "trend": ParagraphStyle("trend", fontSize=5.4, leading=6.5, textColor=colors.HexColor("#2a6f4f")),
-        "legend_label": ParagraphStyle("legend_label", fontSize=7.5, leading=9, fontName="Helvetica-Bold"),
-        "legend_body": ParagraphStyle("legend_body", fontSize=7.5, leading=9.5),
-        "limitations": ParagraphStyle("limitations", fontSize=7.5, leading=10),
+        "legend_body": ParagraphStyle("legend_body", fontSize=7, leading=8.8, spaceAfter=8, textColor=colors.HexColor("#333333")),
     }
 
 
@@ -228,124 +219,42 @@ def _player_row(
     return row
 
 
-# Builds the title page: brief, method, the multi-season data-limitation callout, a
-# metric legend, and the full limitations writeup: everything a scout needs to read
-# the following shortlist pages correctly.
+# Builds the short intro block: brief, a few method notes, one limitations paragraph,
+# and a compact glossary. Kept deliberately tight (a few sentences per part, not a full
+# writeup) since the detailed reasoning for these choices lives in the README, and this
+# report needs to leave most of its 3 pages for the actual shortlists.
 def _title_page_story(config: dict, season_detail: pd.DataFrame, styles: dict) -> list:
     comp = config["competition"]
     age_cfg = config["age"]
-    fwd_cfg = config["forward_classification"]
-    min_minutes = config["playing_time"]["min_minutes"]
     seasons = config["seasons"]
-    consistency_cfg = config["consistency"]
-
-    min_seasons = consistency_cfg["min_seasons_qualified"]
-    if min_seasons > 1:
-        consistency_brief = f"checked for consistency across {len(seasons)} seasons rather than a single-season snapshot"
-        consistency_method = (
-            f"a player must qualify in at least {min_seasons} of the {len(seasons)} tracked seasons to appear "
-            f"in this report at all"
-        )
-    else:
-        consistency_brief = f"with season-by-season consistency shown across {len(seasons)} tracked seasons"
-        consistency_method = (
-            f"a player needs to qualify in only 1 of the {len(seasons)} tracked seasons to appear in this "
-            f"report; multi-season qualification is not a hard filter here, but every player's seasons-qualified "
-            f"count and per-season metric trend are shown below so a single-season number can be weighed "
-            f"differently from a multi-season one"
-        )
+    min_minutes = config["playing_time"]["min_minutes"]
 
     season_names = ", ".join(s["name"] for s in seasons)
-    story = [
+    total_players = season_detail["player_id"].nunique()
+
+    return [
         Paragraph(f"Young Forward Scouting Report: {_esc(comp['name'])}, {_esc(season_names)}", styles["title"]),
         Paragraph(
-            f"<b>Brief:</b> identify the strongest forwards aged {age_cfg['min_age']}-{age_cfg['max_age']} "
-            f"against three profiles, {consistency_brief}.",
+            f"Forwards aged {age_cfg['min_age']} to {age_cfg['max_age']}, ranked against three role profiles. "
+            f"A player counts as a forward if that was their starting position in most of their appearances; "
+            f"ages come from Wikidata, matched by name, since FBref blocks scraping. Every stat below is a "
+            f"percentile within the {total_players}-player qualifying pool rather than a raw number, since raw "
+            f"shot and pass counts are skewed by a handful of heavy-usage players.",
             styles["body"],
         ),
-        Paragraph("Method", styles["h2"]),
         Paragraph(
-            f"StatsBomb open-data events are flattened to per-action rows for each season. A player is classed "
-            f"a forward if a forward position was their <i>starting</i> position in ≥"
-            f"{int(fwd_cfg['min_forward_appearance_share']*100)}% of their appearances in a given season "
-            f"(gotcha: position is recorded per appearance, not per player). Ages are resolved via Wikidata and "
-            f"reconciled by name, since StatsBomb records full legal names that rarely match a common football "
-            f"name directly, and FBref (the originally-planned age source) blocks automated requests behind a "
-            f"Cloudflare challenge. A season only counts toward a player's qualifying total if they clear a "
-            f"minutes floor in it; {consistency_method}. That floor is normally {min_minutes} minutes, but is "
-            f"scaled down for a team whose season is only partially represented in the data (see below), never "
-            f"below {config['playing_time']['min_minutes_absolute_floor']} minutes. Every metric is a percentile "
-            f"within the qualifying pool, not a raw z-score, since shot- and pass-volume metrics are heavily "
-            f"right-skewed; the three profiles are just different weightings of the same underlying metric table.",
+            f"<b>Limitations:</b> only {seasons[0]['name']} is a complete StatsBomb season; {seasons[1]['name']} "
+            f"and {seasons[2]['name']} only include Barcelona's matches plus each opponent's two games against "
+            f"them, so the {min_minutes}-minute floor is scaled down per team to keep those seasons usable. "
+            f"Non-Barcelona players in those years are still working from a much smaller sample than a full "
+            f"campaign, and any player under 300 total minutes is flagged on their row below. These numbers "
+            f"reflect team and league context as much as individual skill, and won't carry over to an NCAA pool "
+            f"without re-baselining. Ages are matched by name, not a shared ID; unmatched names are logged in "
+            f"data/unmatched_players.csv rather than dropped, but a same-name mix-up wouldn't be caught.",
             styles["body"],
         ),
-        Paragraph("Data limitation: uneven season coverage", styles["h2"]),
-        Paragraph(
-            f"Of the {len(seasons)} tracked seasons, only {seasons[0]['name']} is a complete season in StatsBomb's "
-            f"open data (every match, every team). {seasons[1]['name']} and {seasons[2]['name']} are "
-            f"<b>Barcelona-only releases</b>: StatsBomb published every Barcelona match those seasons, which "
-            f"means every other club's players only have the 2 matches they played against Barcelona that year. "
-            f"A flat {min_minutes}-minute floor would make those two seasons impossible for anyone outside "
-            f"Barcelona to clear, so the floor is scaled to each player's own team: a club with only 2 of a "
-            f"reference 38-match season on record is held to a proportionally smaller bar (down to a "
-            f"{config['playing_time']['min_minutes_absolute_floor']}-minute absolute minimum, so a single "
-            f"substitute cameo still can't qualify). This meaningfully broadens the pool beyond Barcelona, but "
-            f"doesn't erase the gap: a non-Barcelona player's qualifying seasons still rest on far fewer minutes "
-            f"than a full campaign, so their percentile ranks carry more sampling noise than a player with a "
-            f"complete season behind them. This is a real gap in the free StatsBomb open-data catalogue, not a "
-            f"filtering choice made here; no equivalent free, match-location-level dataset covering every club "
-            f"across 3 consecutive seasons was found (FBref and Understat were both checked; both block or "
-            f"withhold the underlying data from a simple fetch, and Understat in particular only exposes "
-            f"result-level stats, not shot locations or pressures, so it couldn't feed the metrics this report "
-            f"uses even if it were reachable).",
-            styles["body"],
-        ),
-        Paragraph("Metric definitions", styles["h2"]),
+        Paragraph(METRIC_GLOSSARY, styles["legend_body"]),
     ]
-
-    legend_rows = [
-        [Paragraph(label, styles["legend_label"]), Paragraph(desc, styles["legend_body"])]
-        for label, desc in METRIC_DEFINITIONS
-    ]
-    legend_table = Table(legend_rows, colWidths=[1.3 * inch, 6.2 * inch])
-    legend_table.setStyle(
-        TableStyle(
-            [
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-                ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ]
-        )
-    )
-    story.append(legend_table)
-
-    total_players = season_detail["player_id"].nunique()
-    seasons_count = season_detail.groupby("player_id")["season_name"].nunique()
-    breakdown = ", ".join(
-        f"{int((seasons_count == n).sum())} in exactly {n}" for n in range(1, len(seasons) + 1)
-    )
-    story.append(Paragraph("Qualifying pool", styles["h2"]))
-    story.append(
-        Paragraph(
-            f"{total_players} players met the forward/minutes/age bar in at least "
-            f"{consistency_cfg['min_seasons_qualified']} tracked season(s): {breakdown}.",
-            styles["body"],
-        )
-    )
-
-    story.append(Paragraph("Limitations", styles["h2"]))
-    story.append(
-        Paragraph(
-            "StatsBomb open data covers professional men's football, not NCAA competition, so these metrics "
-            "will not transfer directly to a college talent pool without re-baselining the percentile ranks "
-            "against that pool. Output reflects team and league context as much as individual skill: a player "
-            "in a stronger side sees more, and better-quality, service. Ages are joined from Wikidata by name "
-            "reconciliation, not a shared player ID; unresolved names are logged rather than dropped silently "
-            "(see data/unmatched_players.csv), but a name-collision mismatch would not be caught the same way.",
-            styles["limitations"],
-        )
-    )
-    return story
 
 
 # Builds the full multi-page PDF and writes it to `output_path`.
@@ -373,16 +282,22 @@ def render_report(
         )
 
         story = _title_page_story(config, season_detail, styles)
-        story.append(PageBreak())
 
-        profile_names = list(profiles.keys())
-        for profile_index, profile_name in enumerate(profile_names):
-            weights = profiles[profile_name]
-            story.append(Paragraph(PROFILE_TITLES.get(profile_name, profile_name), styles["profile_header"]))
-            story.append(Paragraph(PROFILE_BLURBS.get(profile_name, ""), styles["profile_blurb"]))
-            for rank_num, (_, player_row) in enumerate(shortlists[profile_name].iterrows(), start=1):
-                story.append(_player_row(rank_num, player_row, weights, styles, tmp_dir, season_detail, seasons_total))
-            if profile_index < len(profile_names) - 1:
-                story.append(PageBreak())
+        # No forced page breaks between profiles: letting the shortlists flow
+        # naturally is what keeps this to 3 pages instead of 4. Each profile's
+        # header stays glued to its first player row (KeepTogether) so a header
+        # never ends up alone at the bottom of a page with its list on the next.
+        for profile_name, weights in profiles.items():
+            header = [
+                Paragraph(PROFILE_TITLES.get(profile_name, profile_name), styles["profile_header"]),
+                Paragraph(PROFILE_BLURBS.get(profile_name, ""), styles["profile_blurb"]),
+            ]
+            rows = [
+                _player_row(rank_num, player_row, weights, styles, tmp_dir, season_detail, seasons_total)
+                for rank_num, (_, player_row) in enumerate(shortlists[profile_name].iterrows(), start=1)
+            ]
+            first_row = rows[:1]
+            story.append(KeepTogether(header + first_row))
+            story.extend(rows[1:])
 
         doc.build(story)
