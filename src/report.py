@@ -1,12 +1,11 @@
-"""Render the one-page PDF scouting report.
-
-Layout: a top band (brief + method), three side-by-side columns (one per
-profile's shortlist, each player shown as a percentile radar plus key
-numbers and a data-driven rationale), and a bottom limitations band. Each
-column is wrapped in reportlab's KeepInFrame(mode="shrink") so a shortlist
-that's a little too long to fit auto-scales down rather than overflowing
-onto a second page.
-"""
+# Renders the multi-page PDF scouting report: a title/method/legend page, followed by
+# one page per profile's top-10 shortlist. Budgeted at 4 pages total.
+#
+# Ranking is against the consistency-filtered pool from main.py (players who qualified
+# as an 18-23 forward with enough minutes in at least `consistency.min_seasons_qualified`
+# of the tracked seasons). Per-player context here (age progression, seasons
+# qualified, metric trend across seasons) comes from `season_detail`, the underlying
+# per-season rows main.py built before averaging.
 
 from __future__ import annotations
 
@@ -21,21 +20,10 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from mplsoccer import Radar
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import (
-    BaseDocTemplate,
-    Frame,
-    FrameBreak,
-    Image,
-    KeepInFrame,
-    PageTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from reportlab.platypus import Image, PageBreak, Paragraph, SimpleDocTemplate, Table, TableStyle
 
 METRIC_LABELS = {
     "xg_per90": "xG/90",
@@ -51,32 +39,73 @@ METRIC_LABELS = {
     "pass_completion_pct": "Pass completion %",
 }
 
+METRIC_DEFINITIONS = [
+    ("xG/90", "Expected goals per 90 minutes: StatsBomb's own shot_statsbomb_xg, summed and prorated. No in-house xG model is used."),
+    ("xG assisted/90", "Expected goals from shots that immediately followed this player's pass, where StatsBomb tags that pass as the shot assist."),
+    ("Key passes/90", "Passes that led directly to a shot attempt, per 90 minutes."),
+    ("Prog. carries/90", "Carries that cut a meaningful distance off the distance to the opponent goal, per 90 minutes (threshold set in config.yaml)."),
+    ("Box touches/90", "Passes, carries, dribbles, or shots that occur inside the opponent penalty box, per 90 minutes."),
+    ("Pressures/90", "Defensive pressure events applied to an opponent on the ball, per 90 minutes."),
+    ("Def. actions/90", "Interceptions, blocks, clearances, and tackles combined, per 90 minutes."),
+    ("Pass completion %", "Completed passes as a share of passes attempted."),
+    ("Conv. rate", "Goals scored per shot taken."),
+    ("Percentile (Pxx)", "Where a player's raw number ranks within the qualifying pool, 0-100. Used instead of a raw z-score because shot- and pass-volume metrics are heavily right-skewed."),
+]
+
 PROFILE_TITLES = {
     "goalscorer": "Goalscorer",
     "creative_wide": "Creative Wide Forward",
     "complete_pressing": "Complete / Pressing Forward",
 }
 
-_PAGE_SIZE = landscape(letter)
+PROFILE_BLURBS = {
+    "goalscorer": "Ranked on shot quality and volume in and around the box: xG, shots on target, conversion, box touches.",
+    "creative_wide": "Ranked on chance creation: xG assisted, key passes, progressive carries, and dribbling.",
+    "complete_pressing": "A blend profile: finishing and creation alongside pressing and defensive work rate.",
+}
+
+_PAGE_SIZE = letter
 
 
+# Builds the named paragraph styles used throughout the report.
+def _build_styles() -> dict[str, ParagraphStyle]:
+    return {
+        "title": ParagraphStyle("title", fontSize=17, leading=20, fontName="Helvetica-Bold", spaceAfter=6),
+        "h2": ParagraphStyle("h2", fontSize=12, leading=14, fontName="Helvetica-Bold", spaceBefore=8, spaceAfter=4),
+        "body": ParagraphStyle("body", fontSize=9, leading=12, spaceAfter=6),
+        "profile_header": ParagraphStyle("profile_header", fontSize=13, leading=15, fontName="Helvetica-Bold"),
+        "profile_blurb": ParagraphStyle("profile_blurb", fontSize=8, leading=10, textColor=colors.HexColor("#444444"), spaceAfter=3),
+        "rank": ParagraphStyle("rank", fontSize=10, leading=11, fontName="Helvetica-Bold"),
+        "player_name": ParagraphStyle("player_name", fontSize=7.6, leading=9, fontName="Helvetica-Bold"),
+        "player_meta": ParagraphStyle("player_meta", fontSize=5.9, leading=7.2, textColor=colors.HexColor("#444444")),
+        "stat": ParagraphStyle("stat", fontSize=5.6, leading=6.7),
+        "rationale": ParagraphStyle("rationale", fontSize=5.6, leading=6.7, textColor=colors.HexColor("#333333")),
+        "trend": ParagraphStyle("trend", fontSize=5.4, leading=6.5, textColor=colors.HexColor("#2a6f4f")),
+        "legend_label": ParagraphStyle("legend_label", fontSize=7.5, leading=9, fontName="Helvetica-Bold"),
+        "legend_body": ParagraphStyle("legend_body", fontSize=7.5, leading=9.5),
+        "limitations": ParagraphStyle("limitations", fontSize=7.5, leading=10),
+    }
+
+
+# Renders one player's percentile radar (only the metrics their profile weights) to a
+# PNG in `tmp_dir` and returns its path.
 def _render_radar(player_row: pd.Series, weights: dict[str, float], tmp_dir: Path) -> Path:
-    metrics = list(weights.keys())
-    labels = [METRIC_LABELS.get(m, m) for m in metrics]
-    values = [float(player_row[f"{m}_pctl"]) for m in metrics]
+    metric_names = list(weights.keys())
+    labels = [METRIC_LABELS.get(m, m) for m in metric_names]
+    values = [float(player_row[f"{m}_pctl"]) for m in metric_names]
 
     radar = Radar(
-        labels, [0] * len(metrics), [100] * len(metrics), num_rings=3, round_int=[True] * len(metrics)
+        labels, [0] * len(metric_names), [100] * len(metric_names), num_rings=3, round_int=[True] * len(metric_names)
     )
-    fig, ax = radar.setup_axis(figsize=(1.7, 1.7))
-    radar.draw_circles(ax=ax, facecolor="#e8e8e8", edgecolor="#999999", lw=0.4)
+    fig, ax = radar.setup_axis(figsize=(1.3, 1.3))
+    radar.draw_circles(ax=ax, facecolor="#e8e8e8", edgecolor="#999999", lw=0.3)
     radar.draw_radar(
         values,
         ax=ax,
         kwargs_radar={"facecolor": "#2a6f4f", "alpha": 0.6},
         kwargs_rings={"facecolor": "#a8d5ba", "alpha": 0.25},
     )
-    radar.draw_param_labels(ax=ax, fontsize=4.5)
+    radar.draw_param_labels(ax=ax, fontsize=3.6)
 
     out_path = tmp_dir / f"radar_{player_row['player_id']}_{player_row['profile']}.png"
     fig.savefig(out_path, dpi=200, bbox_inches="tight", transparent=True)
@@ -84,55 +113,114 @@ def _render_radar(player_row: pd.Series, weights: dict[str, float], tmp_dir: Pat
     return out_path
 
 
-def generate_rationale(player_row: pd.Series, weights: dict[str, float]) -> str:
-    """Data-driven rationale: names the two metrics that contributed most to
-    this player's composite score (weight * percentile), so the sentence
-    always reflects why THIS player ranked where they did.
-    """
+# Builds a "0.82 -> 1.15" style trend string for one metric across a player's qualifying
+# seasons, oldest first, so a scout can see trajectory rather than just an average.
+def _metric_trend(player_id: int, metric: str, season_detail: pd.DataFrame) -> str:
+    rows = season_detail[season_detail["player_id"] == player_id].sort_values("season_start_date")
+    return " -> ".join(f"{v:.2f}" for v in rows[metric])
+
+
+# Below this many total qualifying minutes (~3.3 full matches), a player's per-90 rates
+# are dominated by single-match variance rather than a real pattern: e.g. one deflected
+# shot in 90 minutes alone can produce a top-percentile xG/90. Flagged directly on the
+# player row rather than left to a page-1 disclaimer, since this is exactly the kind of
+# thing a scout could otherwise mistake for signal.
+SMALL_SAMPLE_MINUTES = 300
+
+
+# Builds a data-driven rationale sentence: names the two metrics that contributed most
+# to this player's composite score (weight * percentile), and states how many of the
+# tracked seasons they actually qualified in, so the sentence reflects both why they
+# ranked where they did and how much of a track record backs the number. Prefixes a
+# small-sample warning when total qualifying minutes are thin enough that the ranking
+# is likely driven by variance rather than a real pattern.
+def generate_rationale(player_row: pd.Series, weights: dict[str, float], seasons_total: int) -> str:
     contributions = sorted(
         ((metric, weight * player_row[f"{metric}_pctl"]) for metric, weight in weights.items()),
         key=lambda item: item[1],
         reverse=True,
     )
     top_metrics = [METRIC_LABELS.get(m, m) for m, _ in contributions[:2]]
-    age = int(player_row["age"])
-    minutes = int(player_row["minutes_played"])
+    minutes_total = int(player_row["minutes_played_total"])
+    warning = (
+        f"<font color='#b3541e'><b>Small sample ({minutes_total} min), treat with caution.</b></font> "
+        if minutes_total < SMALL_SAMPLE_MINUTES
+        else ""
+    )
     return (
-        f"{_esc(player_row['player_name'])} ({age}, {_esc(player_row['team'])}) ranks here chiefly on "
-        f"{top_metrics[0]} (P{player_row[f'{contributions[0][0]}_pctl']:.0f}) and "
-        f"{top_metrics[1]} (P{player_row[f'{contributions[1][0]}_pctl']:.0f}) across "
-        f"{minutes} qualifying minutes."
+        f"{warning}Qualified in {int(player_row['seasons_qualified_count'])}/{seasons_total} tracked seasons "
+        f"({_esc(player_row['seasons_qualified'])}), {minutes_total} total qualifying "
+        f"minutes. Ranks here chiefly on {top_metrics[0]} "
+        f"(P{player_row[f'{contributions[0][0]}_pctl']:.0f}) and {top_metrics[1]} "
+        f"(P{player_row[f'{contributions[1][0]}_pctl']:.0f})."
     )
 
 
-def _player_flowable(player_row: pd.Series, weights: dict[str, float], styles: dict, tmp_dir: Path) -> Table:
+# Builds one shortlisted player's full row: rank + radar, name/team/age context, the
+# profile's stat block with season trend, and the rationale sentence.
+def _player_row(
+    rank_num: int,
+    player_row: pd.Series,
+    weights: dict[str, float],
+    styles: dict,
+    tmp_dir: Path,
+    season_detail: pd.DataFrame,
+    seasons_total: int,
+) -> Table:
     radar_path = _render_radar(player_row, weights, tmp_dir)
+    rank_block = Table(
+        [[Paragraph(f"#{rank_num}", styles["rank"])], [Image(str(radar_path), width=0.62 * inch, height=0.62 * inch)]],
+        colWidths=[0.7 * inch],
+    )
+    rank_block.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+
+    # Mixed-font-size Paragraphs (rather than nested sub-tables for each column) so no
+    # extra table cell padding accumulates per player row. With up to 10 rows needing
+    # to fit on one page, that padding was the difference between fitting in 4 pages and
+    # overflowing to 7.
+    meta_para = Paragraph(
+        f"<font size='7.6'><b>{_esc(player_row['player_name'])}</b></font><br/>"
+        f"{_esc(player_row['position'])}<br/>"
+        f"{_esc(player_row['team'])} &middot; age {int(player_row['age'])}<br/>"
+        f"Age by season: {player_row['age_progression']}",
+        styles["player_meta"],
+    )
+
+    top_metric = next(iter(weights))
     stat_lines = [
         f"{METRIC_LABELS.get(m, m)}: {player_row[m]:.2f} (P{player_row[f'{m}_pctl']:.0f})" for m in weights
     ]
-    stat_para = Paragraph("<br/>".join(stat_lines), styles["stat"])
-    rationale_para = Paragraph(generate_rationale(player_row, weights), styles["rationale"])
-    name_para = Paragraph(
-        f"<b>{_esc(player_row['player_name'])}</b>, {_esc(player_row['team'])}, age {int(player_row['age'])}",
-        styles["player_name"],
-    )
-    text_block = Table(
-        [[name_para], [stat_para], [rationale_para]],
-        colWidths=[1.55 * inch],
-    )
-    text_block.setStyle(
-        TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("TOPPADDING", (0, 0), (-1, -1), 1)])
+    stat_para = Paragraph(
+        "<br/>".join(stat_lines)
+        + f"<br/><font color='#2a6f4f'>{METRIC_LABELS.get(top_metric, top_metric)} by season: "
+        f"{_metric_trend(player_row['player_id'], top_metric, season_detail)}</font>",
+        styles["stat"],
     )
 
+    rationale_para = Paragraph(generate_rationale(player_row, weights, seasons_total), styles["rationale"])
+
     row = Table(
-        [[Image(str(radar_path), width=0.85 * inch, height=0.85 * inch), text_block]],
-        colWidths=[0.9 * inch, 1.55 * inch],
+        [[rank_block, meta_para, stat_para, rationale_para]],
+        colWidths=[0.75 * inch, 1.85 * inch, 2.15 * inch, 2.75 * inch],
     )
     row.setStyle(
         TableStyle(
             [
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                 ("LINEBELOW", (0, 0), (-1, -1), 0.4, colors.HexColor("#dddddd")),
             ]
         )
@@ -140,108 +228,161 @@ def _player_flowable(player_row: pd.Series, weights: dict[str, float], styles: d
     return row
 
 
-def _build_styles() -> dict[str, ParagraphStyle]:
-    return {
-        "title": ParagraphStyle("title", fontSize=15, leading=17, fontName="Helvetica-Bold"),
-        "brief": ParagraphStyle("brief", fontSize=7.5, leading=9.5),
-        "column_header": ParagraphStyle(
-            "column_header", fontSize=9.5, leading=11, fontName="Helvetica-Bold", spaceAfter=2
+# Builds the title page: brief, method, the multi-season data-limitation callout, a
+# metric legend, and the full limitations writeup: everything a scout needs to read
+# the following shortlist pages correctly.
+def _title_page_story(config: dict, season_detail: pd.DataFrame, styles: dict) -> list:
+    comp = config["competition"]
+    age_cfg = config["age"]
+    fwd_cfg = config["forward_classification"]
+    min_minutes = config["playing_time"]["min_minutes"]
+    seasons = config["seasons"]
+    consistency_cfg = config["consistency"]
+
+    min_seasons = consistency_cfg["min_seasons_qualified"]
+    if min_seasons > 1:
+        consistency_brief = f"checked for consistency across {len(seasons)} seasons rather than a single-season snapshot"
+        consistency_method = (
+            f"a player must qualify in at least {min_seasons} of the {len(seasons)} tracked seasons to appear "
+            f"in this report at all"
+        )
+    else:
+        consistency_brief = f"with season-by-season consistency shown across {len(seasons)} tracked seasons"
+        consistency_method = (
+            f"a player needs to qualify in only 1 of the {len(seasons)} tracked seasons to appear in this "
+            f"report; multi-season qualification is not a hard filter here, but every player's seasons-qualified "
+            f"count and per-season metric trend are shown below so a single-season number can be weighed "
+            f"differently from a multi-season one"
+        )
+
+    season_names = ", ".join(s["name"] for s in seasons)
+    story = [
+        Paragraph(f"Young Forward Scouting Report: {_esc(comp['name'])}, {_esc(season_names)}", styles["title"]),
+        Paragraph(
+            f"<b>Brief:</b> identify the strongest forwards aged {age_cfg['min_age']}-{age_cfg['max_age']} "
+            f"against three profiles, {consistency_brief}.",
+            styles["body"],
         ),
-        "player_name": ParagraphStyle("player_name", fontSize=7, leading=8.5),
-        "stat": ParagraphStyle("stat", fontSize=5.6, leading=7),
-        "rationale": ParagraphStyle(
-            "rationale", fontSize=5.6, leading=7, textColor=colors.HexColor("#444444")
+        Paragraph("Method", styles["h2"]),
+        Paragraph(
+            f"StatsBomb open-data events are flattened to per-action rows for each season. A player is classed "
+            f"a forward if a forward position was their <i>starting</i> position in ≥"
+            f"{int(fwd_cfg['min_forward_appearance_share']*100)}% of their appearances in a given season "
+            f"(gotcha: position is recorded per appearance, not per player). Ages are resolved via Wikidata and "
+            f"reconciled by name, since StatsBomb records full legal names that rarely match a common football "
+            f"name directly, and FBref (the originally-planned age source) blocks automated requests behind a "
+            f"Cloudflare challenge. A season only counts toward a player's qualifying total if they clear a "
+            f"minutes floor in it; {consistency_method}. That floor is normally {min_minutes} minutes, but is "
+            f"scaled down for a team whose season is only partially represented in the data (see below), never "
+            f"below {config['playing_time']['min_minutes_absolute_floor']} minutes. Every metric is a percentile "
+            f"within the qualifying pool, not a raw z-score, since shot- and pass-volume metrics are heavily "
+            f"right-skewed; the three profiles are just different weightings of the same underlying metric table.",
+            styles["body"],
         ),
-        "limitations": ParagraphStyle("limitations", fontSize=6.3, leading=8),
-    }
+        Paragraph("Data limitation: uneven season coverage", styles["h2"]),
+        Paragraph(
+            f"Of the {len(seasons)} tracked seasons, only {seasons[0]['name']} is a complete season in StatsBomb's "
+            f"open data (every match, every team). {seasons[1]['name']} and {seasons[2]['name']} are "
+            f"<b>Barcelona-only releases</b>: StatsBomb published every Barcelona match those seasons, which "
+            f"means every other club's players only have the 2 matches they played against Barcelona that year. "
+            f"A flat {min_minutes}-minute floor would make those two seasons impossible for anyone outside "
+            f"Barcelona to clear, so the floor is scaled to each player's own team: a club with only 2 of a "
+            f"reference 38-match season on record is held to a proportionally smaller bar (down to a "
+            f"{config['playing_time']['min_minutes_absolute_floor']}-minute absolute minimum, so a single "
+            f"substitute cameo still can't qualify). This meaningfully broadens the pool beyond Barcelona, but "
+            f"doesn't erase the gap: a non-Barcelona player's qualifying seasons still rest on far fewer minutes "
+            f"than a full campaign, so their percentile ranks carry more sampling noise than a player with a "
+            f"complete season behind them. This is a real gap in the free StatsBomb open-data catalogue, not a "
+            f"filtering choice made here; no equivalent free, match-location-level dataset covering every club "
+            f"across 3 consecutive seasons was found (FBref and Understat were both checked; both block or "
+            f"withhold the underlying data from a simple fetch, and Understat in particular only exposes "
+            f"result-level stats, not shot locations or pressures, so it couldn't feed the metrics this report "
+            f"uses even if it were reachable).",
+            styles["body"],
+        ),
+        Paragraph("Metric definitions", styles["h2"]),
+    ]
+
+    legend_rows = [
+        [Paragraph(label, styles["legend_label"]), Paragraph(desc, styles["legend_body"])]
+        for label, desc in METRIC_DEFINITIONS
+    ]
+    legend_table = Table(legend_rows, colWidths=[1.3 * inch, 6.2 * inch])
+    legend_table.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ]
+        )
+    )
+    story.append(legend_table)
+
+    total_players = season_detail["player_id"].nunique()
+    seasons_count = season_detail.groupby("player_id")["season_name"].nunique()
+    breakdown = ", ".join(
+        f"{int((seasons_count == n).sum())} in exactly {n}" for n in range(1, len(seasons) + 1)
+    )
+    story.append(Paragraph("Qualifying pool", styles["h2"]))
+    story.append(
+        Paragraph(
+            f"{total_players} players met the forward/minutes/age bar in at least "
+            f"{consistency_cfg['min_seasons_qualified']} tracked season(s): {breakdown}.",
+            styles["body"],
+        )
+    )
+
+    story.append(Paragraph("Limitations", styles["h2"]))
+    story.append(
+        Paragraph(
+            "StatsBomb open data covers professional men's football, not NCAA competition, so these metrics "
+            "will not transfer directly to a college talent pool without re-baselining the percentile ranks "
+            "against that pool. Output reflects team and league context as much as individual skill: a player "
+            "in a stronger side sees more, and better-quality, service. Ages are joined from Wikidata by name "
+            "reconciliation, not a shared player ID; unresolved names are logged rather than dropped silently "
+            "(see data/unmatched_players.csv), but a name-collision mismatch would not be caught the same way.",
+            styles["limitations"],
+        )
+    )
+    return story
 
 
+# Builds the full multi-page PDF and writes it to `output_path`.
 def render_report(
     shortlists: dict[str, pd.DataFrame],
     profiles: dict[str, dict[str, float]],
     config: dict,
+    season_detail: pd.DataFrame,
     output_path: Path,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     styles = _build_styles()
-    page_w, page_h = _PAGE_SIZE
-    margin = 0.35 * inch
+    seasons_total = len(config["seasons"])
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
 
-        top_h = 0.95 * inch
-        bottom_h = 0.55 * inch
-        col_gap = 0.15 * inch
-        col_w = (page_w - 2 * margin - 2 * col_gap) / 3
-        mid_h = page_h - top_h - bottom_h - 2 * margin
-
-        top_frame = Frame(
-            margin, page_h - margin - top_h, page_w - 2 * margin, top_h, id="top", showBoundary=0
+        doc = SimpleDocTemplate(
+            str(output_path),
+            pagesize=_PAGE_SIZE,
+            leftMargin=0.5 * inch,
+            rightMargin=0.5 * inch,
+            topMargin=0.5 * inch,
+            bottomMargin=0.5 * inch,
         )
-        bottom_frame = Frame(margin, margin, page_w - 2 * margin, bottom_h, id="bottom", showBoundary=0)
-        col_frames = [
-            Frame(
-                margin + i * (col_w + col_gap),
-                margin + bottom_h,
-                col_w,
-                mid_h,
-                id=f"col{i}",
-                showBoundary=0,
-                leftPadding=2,
-                rightPadding=2,
-            )
-            for i in range(3)
-        ]
 
-        doc = BaseDocTemplate(str(output_path), pagesize=_PAGE_SIZE)
-        doc.addPageTemplates([PageTemplate(id="report", frames=[top_frame] + col_frames + [bottom_frame])])
+        story = _title_page_story(config, season_detail, styles)
+        story.append(PageBreak())
 
-        comp = config["competition"]
-        age_cfg = config["age"]
-        min_minutes = config["playing_time"]["min_minutes"]
-        brief = (
-            f"<b>Young Forward Scouting Report: {_esc(comp['name'])}</b><br/>"
-            f"<b>Brief:</b> identify the strongest forwards aged {age_cfg['min_age']}-{age_cfg['max_age']} "
-            f"against three profiles. <b>Method:</b> StatsBomb open-data events flattened to per-action rows; "
-            f"a player is classed a forward if a forward position was their <i>starting</i> position in "
-            f"≥{int(config['forward_classification']['min_forward_appearance_share']*100)}% of appearances; "
-            f"ages resolved via Wikidata and reconciled by name (StatsBomb records full legal names, which rarely "
-            f"match a common football name directly); qualifying pool requires ≥{min_minutes} minutes; every "
-            f"metric is converted to a percentile within that qualifying pool (not a raw z-score, since shot- and "
-            f"pass-volume metrics are heavily right-skewed) and profiles are just different weightings of the same "
-            f"percentile table."
-        )
-        top_story = [Paragraph(brief, styles["brief"])]
-
-        col_story_lists: list[list] = []
-        for profile_name, weights in profiles.items():
-            shortlist = shortlists[profile_name]
-            story = [Paragraph(PROFILE_TITLES.get(profile_name, profile_name), styles["column_header"])]
-            for _, player_row in shortlist.iterrows():
-                story.append(_player_flowable(player_row, weights, styles, tmp_dir))
-                story.append(Spacer(1, 2))
-            col_story_lists.append(story)
-
-        limitations = (
-            "<b>Limitations:</b> StatsBomb open data covers professional men's football, not NCAA competition, so "
-            "metrics here will not transfer directly to a college talent pool without re-baselining the percentile "
-            "ranks against that pool. Output reflects team and league context as much as individual skill (a "
-            "player in a stronger side sees more high-quality chances and better-quality service). Several "
-            "shortlisted players are ranked on well under a full season of minutes; percentile ranks for those "
-            "players carry more sampling noise than for a 2000+ minute regular. Ages are joined from Wikidata by "
-            "name reconciliation, not a shared player ID, so unresolved names are logged, not silently dropped, "
-            "but a reconciliation error would misclassify one player's age band."
-        )
-        bottom_story = [Paragraph(limitations, styles["limitations"])]
-
-        story = [
-            KeepInFrame(top_frame._width, top_frame._height, top_story, mode="shrink"),
-            FrameBreak(),
-        ]
-        for i, col_story in enumerate(col_story_lists):
-            story.append(KeepInFrame(col_frames[i]._width, col_frames[i]._height, col_story, mode="shrink"))
-            story.append(FrameBreak())
-        story.append(KeepInFrame(bottom_frame._width, bottom_frame._height, bottom_story, mode="shrink"))
+        profile_names = list(profiles.keys())
+        for profile_index, profile_name in enumerate(profile_names):
+            weights = profiles[profile_name]
+            story.append(Paragraph(PROFILE_TITLES.get(profile_name, profile_name), styles["profile_header"]))
+            story.append(Paragraph(PROFILE_BLURBS.get(profile_name, ""), styles["profile_blurb"]))
+            for rank_num, (_, player_row) in enumerate(shortlists[profile_name].iterrows(), start=1):
+                story.append(_player_row(rank_num, player_row, weights, styles, tmp_dir, season_detail, seasons_total))
+            if profile_index < len(profile_names) - 1:
+                story.append(PageBreak())
 
         doc.build(story)

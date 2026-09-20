@@ -3,10 +3,29 @@
 
 competition:
   competition_id: 11
-  season_id: 27
-  name: "La Liga 2015/2016"
-  # Reference date for age-at-season-start calculations.
-  season_start_date: "2015-08-01"
+  name: "La Liga"
+
+# Three seasons, checked for consistency rather than a single-season snapshot.
+#
+# IMPORTANT DATA LIMITATION (see README "Known limitations" for the full writeup):
+# 2015/2016 is a genuine complete 380-match season. 2016/2017 and 2017/2018 are NOT
+# complete seasons in StatsBomb's open data: they are Barcelona-only releases (every
+# Barcelona match, full campaign, but only the 2 matches each opponent played against
+# Barcelona that year). That means only Barcelona players can realistically clear the
+# minutes floor in those two seasons, so a "qualified in >=2 of 3 seasons" consistency
+# check will, in practice, mostly surface Barcelona players. This was a deliberate
+# decision to proceed with the data as-is rather than wait for a dataset that doesn't
+# exist publicly; flagged here, in the report itself, and in the README.
+seasons:
+  - season_id: 27
+    name: "2015/2016"
+    season_start_date: "2015-08-01"
+  - season_id: 2
+    name: "2016/2017"
+    season_start_date: "2016-08-01"
+  - season_id: 1
+    name: "2017/2018"
+    season_start_date: "2017-08-01"
 
 age:
   min_age: 18
@@ -16,7 +35,41 @@ playing_time:
   # Deliberately conservative floor: young forwards in a single season often have
   # thin minutes. 600 minutes (~6.7 full matches) keeps per-90 rates from being
   # dominated by small-sample noise while not excluding breakout squad players.
+  # Applied per season. A player must clear this floor in a given season for that
+  # season to count toward their consistency check.
+  #
+  # SCALED for data availability: 2016/2017 and 2017/2018 are Barcelona-only
+  # releases (see README), so a non-Barcelona club only has ~2 matches (~180
+  # possible minutes) on record for those seasons. Nobody could ever clear a flat
+  # 600-minute bar there, no matter how well they played. Rather than demand the
+  # same absolute minutes regardless of how much of a team's season is actually in
+  # the dataset, main.py scales min_minutes down proportionally to how many of a
+  # player's team's matches are present in that season (relative to a full
+  # 38-match season), so a team with only 2 matches on record is held to a
+  # proportionally smaller bar rather than an impossible one.
   min_minutes: 600
+  # Even when scaled down, a player must still clear this many minutes, about one
+  # full match, so a single-substitute cameo can't qualify just because their
+  # club's season is barely represented in the data. This is the safeguard against
+  # reopening the small-sample-noise problem the floor exists to prevent.
+  min_minutes_absolute_floor: 90
+
+consistency:
+  # A player must clear the forward classification, minutes floor, and age band in
+  # at least this many of the configured seasons to make the final qualifying pool.
+  #
+  # Set to 1: with only 5 to 8 players clearing the forward/minutes/age bar in any
+  # given partial season (2016/2017, 2017/2018; see the data-limitation note under
+  # `seasons` above), requiring 2+ seasons left just 5 players total across all three
+  # profiles, nowhere near a top-10 shortlist. At 1, every player who ever qualified
+  # in any tracked season makes the pool (in practice this means the pool is close to
+  # 2015/2016's ~29-player full-season pool, plus the handful of extra players the
+  # partial seasons add). Multi-season qualification is no longer a hard filter, but
+  # it's not thrown away either: every player's `seasons_qualified` count and
+  # season-by-season trend are still shown in the report, so a scout can see and weigh
+  # a 1-season number differently from a 3-season one, rather than the pipeline
+  # silently deciding that for them.
+  min_seasons_qualified: 1
 
 forward_classification:
   # StatsBomb position names treated as "forward" appearances.
@@ -76,7 +129,7 @@ profiles:
 
 shortlist:
   min_size: 3
-  max_size: 5
+  max_size: 10
 
 paths:
   cache_dir: "data/raw"

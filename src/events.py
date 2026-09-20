@@ -1,14 +1,13 @@
-"""Flatten raw StatsBomb events into a tidy per-action table, and derive
-per-appearance playing time and position from lineups + events.
-
-Two outputs feed metrics.py:
-  - actions: one row per action-relevant event (shot, pass, carry, dribble,
-    pressure, defensive action), with the columns metrics.py aggregates.
-  - appearances: one row per (match_id, player_id) with minutes played and
-    the position the player started that appearance in, the basis for both
-    the forward classification (gotcha #1) and the minutes denominator used
-    for every per-90 rate.
-"""
+# Flattens raw StatsBomb events into a tidy per-action table, and derives per-appearance
+# playing time and position from lineups + events.
+#
+# Two outputs feed metrics.py:
+#   - actions: one row per action-relevant event (shot, pass, carry, dribble,
+#     pressure, defensive action), with the columns metrics.py aggregates.
+#   - appearances: one row per (match_id, player_id) with minutes played and
+#     the position the player started that appearance in, the basis for both
+#     the forward classification (gotcha #1) and the minutes denominator used
+#     for every per-90 rate.
 
 from __future__ import annotations
 
@@ -31,22 +30,22 @@ ACTION_EVENT_TYPES = {
 DEFENSIVE_EVENT_TYPES = {"Interception", "Block", "Clearance"}
 
 
+# Parses a StatsBomb 'mm:ss' clock string into total minutes (float).
 def _parse_clock(value: str | None) -> float | None:
-    """Parse a StatsBomb 'mm:ss' clock string into total minutes (float)."""
     if value is None:
         return None
     minutes, seconds = value.split(":")
     return int(minutes) + int(seconds) / 60.0
 
 
+# Maps period -> the match-clock minute (in lineup 'positions' convention) at which
+# that period ended, read from the 'Half End' events.
 def _period_end_minutes(events: pd.DataFrame) -> dict[int, float]:
-    """Map period -> the match-clock minute (in lineup 'positions' convention)
-    at which that period ended, read from the 'Half End' events.
-    """
     half_ends = events[events["type"] == "Half End"]
     return {int(row.period): float(row.minute) + float(row.second) / 60.0 for row in half_ends.itertuples()}
 
 
+# One player's playing time and starting position for a single match.
 @dataclass(frozen=True)
 class Appearance:
     match_id: int
@@ -57,10 +56,9 @@ class Appearance:
     starting_position: str | None
 
 
+# Builds one row per player who took the pitch in this match, with total minutes played
+# and the position they started that appearance in.
 def compute_appearances(match_id: int, lineups: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
-    """One row per player who took the pitch in this match, with total minutes
-    played and the position they started that appearance in.
-    """
     period_end = _period_end_minutes(events)
     rows: list[Appearance] = []
 
@@ -91,8 +89,8 @@ def compute_appearances(match_id: int, lineups: pd.DataFrame, events: pd.DataFra
     return pd.DataFrame(rows)
 
 
+# Reduces one match's raw event stream to a tidy per-action table.
 def flatten_actions(match_id: int, events: pd.DataFrame) -> pd.DataFrame:
-    """Reduce one match's raw event stream to a tidy per-action table."""
     df = events[events["type"].isin(ACTION_EVENT_TYPES)].copy()
     df["match_id"] = match_id
 
@@ -130,11 +128,11 @@ def flatten_actions(match_id: int, events: pd.DataFrame) -> pd.DataFrame:
     return df[keep_cols + ["is_defensive_action"]].rename(columns={"player": "player_name"})
 
 
+# Concatenates per-match actions and appearances into season-level tables.
 def build_season_tables(
     events_by_match: dict[int, pd.DataFrame],
     lineups_by_match: dict[int, pd.DataFrame],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Concatenate per-match actions and appearances into season-level tables."""
     action_frames = []
     appearance_frames = []
 
@@ -148,14 +146,12 @@ def build_season_tables(
     return actions, appearances
 
 
+# Aggregates appearances to one row per player with a season-level forward_share and
+# is_forward flag (gotcha #1: never filter on a single position field; this uses the
+# share of a player's own appearances that started in a forward position).
 def classify_forwards(
     appearances: pd.DataFrame, forward_positions: set[str], min_share: float
 ) -> pd.DataFrame:
-    """Aggregate appearances to one row per player with a season-level
-    forward_share and is_forward flag (gotcha #1: never filter on a single
-    position field; this uses the share of a player's own appearances that
-    started in a forward position).
-    """
     per_player = (
         appearances.assign(is_forward_appearance=appearances["starting_position"].isin(forward_positions))
         .groupby(["player_id", "player_name"], as_index=False)
@@ -168,3 +164,44 @@ def classify_forwards(
     per_player["forward_share"] = per_player["forward_appearances"] / per_player["appearances"]
     per_player["is_forward"] = per_player["forward_share"] >= min_share
     return per_player
+
+
+# Returns one row per player_id with their most-frequent team across `appearances` (a
+# player can appear for more than one club within a season pull if transferred; the
+# mode is used as their "season team" for display and for the minutes-floor scaling
+# in main.py, which needs to know which club's match coverage applies to them).
+def primary_team(appearances: pd.DataFrame) -> pd.DataFrame:
+    return (
+        appearances.groupby(["player_id", "team"])
+        .size()
+        .reset_index(name="n")
+        .sort_values("n", ascending=False)
+        .drop_duplicates("player_id")[["player_id", "team"]]
+    )
+
+
+# Returns one row per player_id with the specific forward position (Center Forward,
+# Left Wing, etc.) they started most often, counting only their forward-position
+# appearances. A player classified as a forward can still have the odd appearance
+# started elsewhere, and those shouldn't skew which forward role gets shown for them.
+def primary_forward_position(appearances: pd.DataFrame, forward_positions: set[str]) -> pd.DataFrame:
+    forward_appearances = appearances[appearances["starting_position"].isin(forward_positions)]
+    return (
+        forward_appearances.groupby(["player_id", "starting_position"])
+        .size()
+        .reset_index(name="n")
+        .sort_values("n", ascending=False)
+        .drop_duplicates("player_id")[["player_id", "starting_position"]]
+        .rename(columns={"starting_position": "position"})
+    )
+
+
+# Returns {team_name: number of matches that team appears in} for one season's match
+# list. Used to scale the minutes floor: a team with only 2 matches in the dataset
+# (see the Barcelona-only-release limitation in the README) can't fairly be held to
+# the same absolute minutes floor as a team with a full 38-match season on record.
+def count_team_matches(matches: pd.DataFrame) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for team in pd.concat([matches["home_team"], matches["away_team"]]):
+        counts[team] = counts.get(team, 0) + 1
+    return counts

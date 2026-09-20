@@ -1,10 +1,9 @@
-"""Fetch StatsBomb open-data matches, events, and lineups, cached locally as pickle files.
-
-Swapping the data source later (e.g. to an NCAA D1 feed) means replacing this
-module's three fetch functions with equivalents that return the same shapes:
-matches indexed by match_id, one events DataFrame per match, one lineups
-DataFrame per match. Nothing downstream (events.py onward) imports statsbombpy.
-"""
+# Fetches StatsBomb open-data matches, events, and lineups, cached locally as pickle files.
+#
+# Swapping the data source later (e.g. to an NCAA D1 feed) means replacing this
+# module's three fetch functions with equivalents that return the same shapes:
+# matches indexed by match_id, one events DataFrame per match, one lineups
+# DataFrame per match. Nothing downstream (events.py onward) imports statsbombpy.
 
 from __future__ import annotations
 
@@ -18,19 +17,17 @@ from statsbombpy import sb
 logger = logging.getLogger(__name__)
 
 
+# Builds the cache file path for one cached item and makes sure its parent directory exists.
 def _cache_file(cache_dir: Path, *parts: str) -> Path:
     path = cache_dir.joinpath(*parts)
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
+# Returns the match list for a competition/season, cached to pickle. Pickle rather than
+# parquet: StatsBomb's flattened columns (e.g. manager lists) carry irregular per-row
+# Python objects that parquet's columnar schema inference rejects.
 def get_matches(competition_id: int, season_id: int, cache_dir: Path) -> pd.DataFrame:
-    """Return the match list for a competition/season, cached to pickle.
-
-    Pickle rather than parquet: StatsBomb's flattened columns (e.g. manager
-    lists) carry irregular per-row Python objects that parquet's columnar
-    schema inference rejects.
-    """
     cache_path = _cache_file(cache_dir, "matches", f"{competition_id}_{season_id}.pkl")
     if cache_path.exists():
         return pd.read_pickle(cache_path)
@@ -39,8 +36,8 @@ def get_matches(competition_id: int, season_id: int, cache_dir: Path) -> pd.Data
     return matches
 
 
+# Returns the flattened event stream for one match, cached to pickle.
 def get_events(match_id: int, cache_dir: Path) -> pd.DataFrame:
-    """Return the flattened event stream for one match, cached to pickle."""
     cache_path = _cache_file(cache_dir, "events", f"{match_id}.pkl")
     if cache_path.exists():
         return pd.read_pickle(cache_path)
@@ -49,8 +46,8 @@ def get_events(match_id: int, cache_dir: Path) -> pd.DataFrame:
     return events
 
 
+# Returns both teams' lineups for one match as a single DataFrame, cached to pickle.
 def get_lineups(match_id: int, cache_dir: Path) -> pd.DataFrame:
-    """Return both teams' lineups for one match as a single DataFrame, cached to pickle."""
     cache_path = _cache_file(cache_dir, "lineups", f"{match_id}.pkl")
     if cache_path.exists():
         return pd.read_pickle(cache_path)
@@ -63,6 +60,12 @@ def get_lineups(match_id: int, cache_dir: Path) -> pd.DataFrame:
     return combined
 
 
+# Fetches (or reads from cache) matches plus per-match events and lineups, returning
+# (matches, {match_id: events_df}, {match_id: lineups_df}). Fetches run concurrently
+# since raw.githubusercontent.com happily serves parallel requests and a full 380-match
+# season is otherwise slow to pull one file at a time; cached matches are read from disk
+# and cost nothing. Pass `max_matches` to only fetch a prefix of the season (quick smoke
+# tests).
 def load_season(
     competition_id: int,
     season_id: int,
@@ -70,14 +73,6 @@ def load_season(
     max_workers: int = 8,
     max_matches: int | None = None,
 ) -> tuple[pd.DataFrame, dict[int, pd.DataFrame], dict[int, pd.DataFrame]]:
-    """Fetch (or read from cache) matches plus per-match events and lineups.
-
-    Returns (matches, {match_id: events_df}, {match_id: lineups_df}). Fetches
-    run concurrently since raw.githubusercontent.com happily serves parallel
-    requests and a full 380-match season is otherwise slow to pull one file
-    at a time; cached matches are read from disk and cost nothing. Pass
-    `max_matches` to only fetch a prefix of the season (quick smoke tests).
-    """
     matches = get_matches(competition_id, season_id, cache_dir)
     match_ids: list[int] = matches["match_id"].tolist()
     if max_matches:
@@ -87,6 +82,7 @@ def load_season(
     events_by_match: dict[int, pd.DataFrame] = {}
     lineups_by_match: dict[int, pd.DataFrame] = {}
 
+    # Fetches one match's events and lineups together, or returns Nones if either fails.
     def fetch_one(match_id: int) -> tuple[int, pd.DataFrame | None, pd.DataFrame | None]:
         try:
             events = get_events(match_id, cache_dir)

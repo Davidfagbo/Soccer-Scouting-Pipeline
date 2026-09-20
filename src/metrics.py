@@ -1,27 +1,32 @@
-"""Aggregate per-action rows into per-90 player metrics.
-
-The full metric set is computed once per player here; rank.py reweights the
-same table per profile rather than recomputing anything. All rate metrics use
-`minutes_played` from events.compute_appearances (i.e. actual pitch time
-reconstructed from lineup position segments and half-end clocks), not
-appearance counts, so per-90 rates aren't distorted by unused-sub minutes.
-"""
+# Aggregates per-action rows into per-90 player metrics.
+#
+# The full metric set is computed once per player here; rank.py reweights the
+# same table per profile rather than recomputing anything. All rate metrics use
+# `minutes_played` from events.compute_appearances (i.e. actual pitch time
+# reconstructed from lineup position segments and half-end clocks), not
+# appearance counts, so per-90 rates aren't distorted by unused-sub minutes.
 
 from __future__ import annotations
 
 import pandas as pd
 
+from src.events import primary_team
+
 ON_TARGET_DEFAULT = {"Goal", "Saved", "Saved to Post"}
 
 
+# Returns a boolean mask for rows whose (loc_x, loc_y) fall inside `box`.
 def _in_box(df: pd.DataFrame, box: dict[str, float]) -> pd.Series:
     return df["loc_x"].between(box["x_min"], box["x_max"]) & df["loc_y"].between(box["y_min"], box["y_max"])
 
 
+# Converts a raw count into a per-90-minutes rate, guarding against division by zero.
 def _per90(count: pd.Series, minutes: pd.Series) -> pd.Series:
     return (count / minutes.replace(0, pd.NA)) * 90.0
 
 
+# Returns one row per player_id with minutes, raw counts, and per-90 rates for every
+# metric referenced by any profile in config.yaml.
 def compute_player_metrics(
     actions: pd.DataFrame,
     appearances: pd.DataFrame,
@@ -29,24 +34,12 @@ def compute_player_metrics(
     penalty_box: dict[str, float] | None = None,
     progressive_carry_min_distance: float = 5.0,
 ) -> pd.DataFrame:
-    """Return one row per player_id with minutes, raw counts, and per-90 rates
-    for every metric referenced by any profile in config.yaml.
-    """
     penalty_box = penalty_box or {"x_min": 102.0, "x_max": 120.0, "y_min": 18.0, "y_max": 62.0}
 
     minutes = appearances.groupby(["player_id", "player_name"], as_index=False).agg(
         minutes_played=("minutes_played", "sum"), appearances=("match_id", "count")
     )
-    # a player can appear for one team in a single-season pull; take the most
-    # frequent team label as their season team for display purposes.
-    team = (
-        appearances.groupby(["player_id", "team"])
-        .size()
-        .reset_index(name="n")
-        .sort_values("n", ascending=False)
-        .drop_duplicates("player_id")[["player_id", "team"]]
-    )
-    minutes = minutes.merge(team, on="player_id", how="left")
+    minutes = minutes.merge(primary_team(appearances), on="player_id", how="left")
 
     shots = actions[actions["type"] == "Shot"].copy()
     shots["is_goal"] = shots["shot_outcome"] == "Goal"
