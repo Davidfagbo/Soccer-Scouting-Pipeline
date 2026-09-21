@@ -74,7 +74,6 @@ def _build_styles() -> dict[str, ParagraphStyle]:
         "player_meta": ParagraphStyle("player_meta", fontSize=5.9, leading=7.2, textColor=colors.HexColor("#444444")),
         "stat": ParagraphStyle("stat", fontSize=5.6, leading=6.7),
         "rationale": ParagraphStyle("rationale", fontSize=5.6, leading=6.7, textColor=colors.HexColor("#333333")),
-        "legend_body": ParagraphStyle("legend_body", fontSize=7, leading=8.8, spaceAfter=8, textColor=colors.HexColor("#333333")),
     }
 
 
@@ -235,25 +234,28 @@ def _title_page_story(config: dict, season_detail: pd.DataFrame, styles: dict) -
     return [
         Paragraph(f"Young Forward Scouting Report: {_esc(comp['name'])}, {_esc(season_names)}", styles["title"]),
         Paragraph(
-            f"Forwards aged {age_cfg['min_age']} to {age_cfg['max_age']}, ranked against three role profiles. "
-            f"A player counts as a forward if that was their starting position in most of their appearances; "
-            f"ages come from Wikidata, matched by name, since FBref blocks scraping. Every stat below is a "
-            f"percentile within the {total_players}-player qualifying pool rather than a raw number, since raw "
-            f"shot and pass counts are skewed by a handful of heavy-usage players.",
+            f"<b>Methodology:</b> forwards aged {age_cfg['min_age']} to {age_cfg['max_age']} across "
+            f"{len(seasons)} La Liga seasons ({season_names}), ranked against three role profiles. A player "
+            f"counts as a forward if that was their starting position in most of their appearances, and needs "
+            f"to qualify in at least one tracked season to appear here. Ages come from Wikidata, matched by "
+            f"name, since FBref blocks scraping. The {min_minutes}-minute floor is scaled down per team for a "
+            f"season only partially covered in the data (as low as "
+            f"{config['playing_time']['min_minutes_absolute_floor']} minutes), so thin seasons stay usable "
+            f"without letting a single cameo through. Every stat is a percentile within the {total_players}-player "
+            f"qualifying pool rather than a raw number, since shot and pass volume is skewed by a handful of "
+            f"heavy-usage players.",
             styles["body"],
         ),
         Paragraph(
-            f"<b>Limitations:</b> only {seasons[0]['name']} is a complete StatsBomb season; {seasons[1]['name']} "
-            f"and {seasons[2]['name']} only include Barcelona's matches plus each opponent's two games against "
-            f"them, so the {min_minutes}-minute floor is scaled down per team to keep those seasons usable. "
-            f"Non-Barcelona players in those years are still working from a much smaller sample than a full "
-            f"campaign, and any player under 300 total minutes is flagged on their row below. These numbers "
-            f"reflect team and league context as much as individual skill, and won't carry over to an NCAA pool "
-            f"without re-baselining. Ages are matched by name, not a shared ID; unmatched names are logged in "
-            f"data/unmatched_players.csv rather than dropped, but a same-name mix-up wouldn't be caught.",
+            f"<b>Limitations:</b> {seasons[1]['name']} and {seasons[2]['name']} only cover Barcelona's matches "
+            f"plus each opponent's two games against them, so non-Barcelona results in those seasons rest on a "
+            f"much smaller sample; anyone under 300 total minutes is flagged below. These numbers reflect team "
+            f"and league strength as much as individual skill and won't transfer to an NCAA pool without "
+            f"re-baselining. Age matching is by name, not a shared ID, so a same-name mix-up is possible; "
+            f"unmatched names are logged, not dropped.",
             styles["body"],
         ),
-        Paragraph(METRIC_GLOSSARY, styles["legend_body"]),
+        Paragraph(METRIC_GLOSSARY, styles["body"]),
     ]
 
 

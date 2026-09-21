@@ -50,6 +50,11 @@ join-by-name approach, same reconciliation problem (StatsBomb records full
 legal names like "Luis Alberto Suárez Díaz" that don't match a Wikidata
 page's common name), but a source that's actually reachable.
 
+Understat was checked too, as a fallback: it's reachable, but loads its
+stats client-side, so a plain fetch returns an empty shell. Its data is also
+match-result-level only (no shot locations, no pressures), so it couldn't
+have fed this pipeline's location-based metrics even if it were reachable.
+
 ## Setup
 
 ```bash
@@ -95,7 +100,15 @@ python main.py --max-matches 8
    score doesn't discount for sample size though, so a player let in through
    the scaled floor (below) can still rank #1 off a handful of matches;
    `report.py` flags anyone under 300 total minutes directly on their row.
-5. **Only one of the three tracked seasons is complete.** See Limitations.
+5. **Only one of the three tracked seasons is complete.** 2016/17 and
+   2017/18 are Barcelona-only releases (every Barcelona match, plus each
+   opponent's two games against them), so a flat 600-minute floor would make
+   those seasons unusable outside Barcelona. `main.py` scales the floor per
+   player by how much of their team's season is actually in the dataset
+   (`events.count_team_matches`), down to an absolute floor of 90 minutes
+   (`playing_time.min_minutes_absolute_floor`) so a single cameo still can't
+   qualify. That took the qualifying pool from 1 Barcelona player to 38
+   across many clubs, though it doesn't fully close the gap; see Limitations.
 
 ## Configuration
 
@@ -117,37 +130,18 @@ data/
 
 ## Limitations
 
-Only 2015/16 is a complete StatsBomb season. 2016/17 and 2017/18 are
-Barcelona-only releases: StatsBomb published every Barcelona match those
-seasons, and since a match has two teams, every other club shows up too, but
-only for the 2 matches they played against Barcelona that year. A flat
-600-minute floor would make those two seasons unusable outside Barcelona, so
-`main.py` scales the floor per player by how much of their team's season is
-actually in the dataset (`events.count_team_matches`), down to an absolute
-floor of 90 minutes (`playing_time.min_minutes_absolute_floor`) so a single
-cameo still can't qualify. That took the qualifying pool from 1 Barcelona
-player to 38 players across many clubs, but it doesn't fully close the gap:
-a non-Barcelona player's seasons still rest on far fewer minutes than a full
-campaign, so their percentile ranks carry more noise, which is why the
-report flags anyone under 300 total minutes on their row.
+Season coverage is uneven (see gotcha 5): non-Barcelona players in 2016/17
+and 2017/18 are working from a much smaller sample than a full campaign,
+which is why the report flags anyone under 300 total minutes. Output
+reflects team and league strength as much as individual skill. These
+percentiles are relative to this qualifying pool and won't carry over to an
+NCAA pool without re-baselining once the loader is swapped. Age matching is
+by name, not a shared player ID, so a same-name mix-up is possible;
+unmatched names are logged rather than dropped, but a wrong match wouldn't
+be caught the same way.
 
-This was a deliberate call, made after checking for a better dataset and not
-finding one. FBref is blocked by Cloudflare (see above). Understat is
-reachable but loads its stats client-side, so a plain fetch returns an
-empty shell, and even its data is match-result-level only (no shot
-locations, no pressures), so it couldn't feed this pipeline's location-based
-metrics anyway. No free source with StatsBomb's event-level granularity and
-full match coverage across 3 consecutive seasons of one league exists.
-
-A few other things worth knowing: output reflects team and league strength
-as much as individual skill, so a player on a stronger side sees more and
-better service. These percentiles are relative to this pool and won't carry
-over to an NCAA pool without re-baselining once the loader is swapped. Age
-matching is by name, not a shared player ID, so a same-name mix-up is
-possible even when Wikidata returns a confident match; unresolved names are
-logged rather than dropped, but a wrong match wouldn't be caught the same
-way. And if you want a different tradeoff on the season-coverage issue:
-`consistency.min_seasons_qualified` (set to 2 or 3 to require a real track
-record, shrinking the pool back down), `playing_time.min_minutes_absolute_floor`
-(raise it to demand more minutes from thin seasons), or drop 2016/17 and
-2017/18 from `seasons` for a single-season report.
+To change the season-coverage tradeoff: raise `consistency.min_seasons_qualified`
+for a stricter track-record requirement, raise
+`playing_time.min_minutes_absolute_floor` to demand more minutes from thin
+seasons, or drop 2016/17 and 2017/18 from `seasons` for a single-season
+report.
