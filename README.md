@@ -2,7 +2,7 @@
 
 Finds the strongest young forwards (18-23) in StatsBomb's open data, checks
 them for consistency across three La Liga seasons (2015-2018), and
-ranks them against three role profiles. Output is a 3-page PDF scouting
+ranks them against three role profiles. Output is a PDF scouting
 report, top 10 players per profile.
 
 This is a method demonstration. The StatsBomb loader (`src/load.py`) is the
